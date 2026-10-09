@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#103e38">
+  <title>Gestión de almacenes e instalaciones</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <section class="auth-screen" id="auth-screen" hidden>
+    <div class="auth-card">
+      <span class="brand-mark auth-mark">GA</span><p class="eyebrow">GESTIÓN DE OPERACIONES</p>
+      <h1>Iniciar sesión</h1><p class="subtitle">Ingresa con la cuenta que te asignó el administrador.</p>
+      <div id="auth-notice" class="notice" role="alert" hidden></div>
+      <form id="login-form" class="stack-form"><label>Usuario<input name="username" autocomplete="username" required maxlength="80"></label><label>Contraseña<input name="password" type="password" autocomplete="current-password" required></label><button class="button primary full-button" type="submit">Ingresar</button></form>
+      <small class="auth-help">Primera configuración: ejecuta <code>py app.py --create-admin</code> en el servidor.</small>
+    </div>
+  </section>
+  <div class="app-shell" id="app-shell" hidden>
+    <aside class="sidebar">
+      <a class="brand" href="#inicio" aria-label="Ir al inicio">
+        <span class="brand-mark">GA</span>
+        <span><strong>Almacenes e instalaciones</strong><small>Operaciones de campo</small></span>
+      </a>
+      <div class="sidebar-label">GESTIÓN</div>
+      <nav class="nav-list" aria-label="Navegación principal">
+        <button class="nav-item active" data-view="inicio"><span class="nav-icon">▦</span>Resumen</button>
+        <button class="nav-item" data-view="inventario" data-permission="view_inventory"><span class="nav-icon">▤</span>Inventario</button>
+        <button class="nav-item" data-view="movimientos" data-permission="view_movements"><span class="nav-icon">⇄</span>Movimientos</button>
+      </nav>
+      <div class="sidebar-label secondary-label">CONFIGURACIÓN</div>
+      <nav class="nav-list" aria-label="Catálogos">
+        <button class="nav-item" data-view="almacenes" data-permission="manage_warehouses"><span class="nav-icon">▣</span>Almacenes</button>
+        <button class="nav-item" data-view="cuentas" data-admin-only><span class="nav-icon">♧</span>Cuentas y permisos</button>
+        <button class="nav-item" data-view="personal" data-permission="manage_people"><span class="nav-icon">♙</span>Personal</button>
+        <button class="nav-item" data-view="articulos" data-permission="manage_items"><span class="nav-icon">◈</span>Artículos</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <span class="environment-dot"></span>
+        <span><strong>Desarrollo</strong><small>Datos locales de prueba</small></span>
+      </div>
+    </aside>
+
+    <main class="main-area">
+      <header class="topbar">
+        <div class="breadcrumb"><span>Operaciones</span><span class="crumb-separator">/</span><strong id="page-crumb">Resumen</strong></div>
+        <div class="topbar-right"><span class="user-label" id="user-label"></span><label class="warehouse-context">Almacén activo<select id="warehouse-selector" aria-label="Almacén activo"></select></label><button class="icon-button" id="logout-button" title="Cerrar sesión" aria-label="Cerrar sesión">⇥</button><button class="icon-button" id="refresh-button" title="Actualizar datos" aria-label="Actualizar datos">↻</button></div>
+      </header>
+
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+      <section class="view active" id="view-inicio">
+        <div class="page-heading">
+          <div><p class="eyebrow">CONTROL DE ALMACÉN</p><h1>Resumen de operación</h1><p class="subtitle">Personal, artículos y existencias por ubicación.</p></div>
+          <span class="date-chip" id="today-label"></span>
+        </div>
+        <div class="metric-grid">
+          <article class="metric-card" data-permission="manage_people"><div class="metric-top"><span>Personal activo</span><span class="metric-icon mint">♙</span></div><strong id="metric-employees">—</strong><small>Técnicos y equipo de almacén</small></article>
+          <article class="metric-card"><div class="metric-top"><span>Artículos</span><span class="metric-icon gold">◈</span></div><strong id="metric-items">—</strong><small>Materiales y equipos registrados</small></article>
+          <article class="metric-card" data-permission="view_inventory"><div class="metric-top"><span>Posiciones con stock</span><span class="metric-icon blue">▤</span></div><strong id="metric-units">—</strong><small>Artículos con saldo por ubicación</small></article>
+          <article class="metric-card" data-permission="view_movements"><div class="metric-top"><span>Movimientos recientes</span><span class="metric-icon coral">⇄</span></div><strong id="metric-movements">—</strong><small>Últimas operaciones registradas</small></article>
+        </div>
+        <div class="content-grid">
+          <article class="panel quick-panel">
+            <div class="panel-heading"><div><p class="eyebrow">ACCIONES</p><h2>Operaciones frecuentes</h2></div></div>
+            <div class="quick-actions">
+              <button class="quick-action" data-view="personal" data-permission="manage_people"><span class="action-icon mint">＋</span><span><strong>Registrar personal</strong><small>Agregar un trabajador o técnico</small></span><b>›</b></button>
+              <button class="quick-action" data-view="articulos" data-permission="manage_items"><span class="action-icon gold">＋</span><span><strong>Registrar artículo</strong><small>Crear un material o equipo</small></span><b>›</b></button>
+              <button class="quick-action" data-view="ingreso" data-permission="receive_stock"><span class="action-icon blue">↓</span><span><strong>Ingresar al almacén</strong><small>Registrar documento, cantidades y series</small></span><b>›</b></button>
+              <button class="quick-action" data-view="transferencia" data-permission="transfer_stock"><span class="action-icon coral">⇄</span><span><strong>Transferir a un técnico</strong><small>Entregar material desde almacén central</small></span><b>›</b></button>
+            </div>
+          </article>
+          <article class="panel recent-panel" data-permission="view_movements">
+            <div class="panel-heading"><div><p class="eyebrow">ACTIVIDAD</p><h2>Movimientos recientes</h2></div><button class="text-button" data-view="movimientos">Ver todos <span>›</span></button></div>
+            <div id="recent-movements" class="recent-list"><div class="empty-state">Cargando movimientos…</div></div>
+          </article>
+        </div>
+        <article class="panel inventory-preview" data-permission="view_inventory">
+          <div class="panel-heading"><div><p class="eyebrow">EXISTENCIAS</p><h2>Stock por ubicación</h2></div><button class="text-button" data-view="inventario">Ver inventario <span>›</span></button></div>
+          <div id="inventory-preview-table"></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-inventario" data-view-permission="view_inventory">
+        <div class="page-heading"><div><p class="eyebrow">CONSULTA</p><h1>Inventario</h1><p class="subtitle">Saldos calculados a partir del historial de movimientos.</p></div></div>
+        <article class="panel"><div class="panel-heading"><div><h2>Existencias por almacén</h2><p class="panel-subtitle">Las series identifican cada equipo de forma individual.</p></div><button class="button secondary" data-view="ingreso" data-permission="receive_stock">＋ Ingresar stock</button></div><div id="inventory-table"></div></article>
+      </section>
+
+      <section class="view" id="view-movimientos" data-view-permission="view_movements">
+        <div class="page-heading"><div><p class="eyebrow">TRAZABILIDAD</p><h1>Movimientos</h1><p class="subtitle">Ingresos y transferencias con documento y responsable.</p></div><div class="heading-actions"><button class="button secondary" data-view="ingreso">＋ Ingreso</button><button class="button primary" data-view="transferencia">⇄ Transferencia</button></div></div>
+        <article class="panel" data-permission="view_movements"><div class="panel-heading"><div><h2>Historial</h2><p class="panel-subtitle">Se muestran los 30 movimientos más recientes.</p></div></div><div id="movement-table"></div></article>
+      </section>
+
+      <section class="view" id="view-personal" data-view-permission="manage_people">
+        <div class="page-heading"><div><p class="eyebrow">EQUIPO</p><h1>Personal</h1><p class="subtitle">Registra trabajadores y crea un almacén virtual para cada técnico.</p></div></div>
+        <div class="form-layout">
+          <article class="panel form-panel"><div class="panel-heading"><div><p class="eyebrow">NUEVO REGISTRO</p><h2>Registrar trabajador</h2></div></div>
+            <form id="employee-form" class="stack-form">
+              <label>Código de trabajador<input name="code" maxlength="40" required placeholder="Ej. TEC-001"></label>
+              <div class="two-fields"><label>Nombres<input name="first_name" maxlength="100" required></label><label>Apellidos<input name="last_name" maxlength="100" required></label></div>
+              <label>Cargo<select name="role" required><option value="Técnico">Técnico</option><option value="Almacenero">Almacenero</option><option value="Supervisor">Supervisor</option><option value="Otro">Otro</option></select></label>
+              <input type="hidden" name="warehouse_id" id="employee-warehouse-id">
+              <div class="info-note"><span>ⓘ</span><p>El técnico se asignará al almacén activo y tendrá su ubicación de inventario propia.</p></div>
+              <button class="button primary full-button" type="submit">Guardar trabajador</button>
+            </form>
+          </article>
+          <article class="panel list-panel"><div class="panel-heading"><div><p class="eyebrow">DIRECTORIO</p><h2>Personal registrado</h2></div><span class="count-pill" id="employee-count">0</span></div><div id="employee-list"></div></article>
+        </div>
+      </section>
+
+      <section class="view" id="view-almacenes" data-view-permission="manage_warehouses">
+        <div class="page-heading"><div><p class="eyebrow">ESTRUCTURA</p><h1>Almacenes</h1><p class="subtitle">Crea almacenes independientes. Todos usan los mismos módulos y operaciones.</p></div></div>
+        <div class="form-layout">
+          <article class="panel form-panel"><div data-admin-only><div class="panel-heading"><div><p class="eyebrow">NUEVO ALMACÉN</p><h2>Crear almacén</h2></div></div>
+            <form id="warehouse-form" class="stack-form"><label>Nombre del almacén<input name="name" maxlength="100" required placeholder="Ej. Almacén Lima Norte"></label><div class="info-note"><span>ⓘ</span><p>Se creará también el subalmacén “General”. Luego podrás agregar más subalmacenes.</p></div><button class="button primary full-button" type="submit">Crear almacén</button></form>
+            <div class="panel-divider"></div></div>
+            <div class="panel-heading"><div><p class="eyebrow">SUBALMACÉN</p><h2>Agregar ubicación central</h2></div></div>
+            <form id="subwarehouse-form" class="stack-form"><label>Nombre<input name="name" maxlength="100" required placeholder="Ej. Mantenimiento"></label><input type="hidden" name="warehouse_id" id="subwarehouse-warehouse-id"><button class="button secondary full-button" type="submit">Agregar al almacén activo</button></form>
+          </article>
+          <article class="panel list-panel"><div class="panel-heading"><div><p class="eyebrow">ALMACENES DISPONIBLES</p><h2>Almacenes y subalmacenes</h2></div><span class="count-pill" id="warehouse-count">0</span></div><div id="warehouse-list"></div></article>
+        </div>
+      </section>
+
+      <section class="view" id="view-cuentas" data-admin-only>
+        <div class="page-heading"><div><p class="eyebrow">SEGURIDAD</p><h1>Cuentas y permisos</h1><p class="subtitle">Asigna almacenes y configura excepciones por usuario.</p></div></div>
+        <div class="form-layout">
+          <article class="panel form-panel"><div class="panel-heading"><div><p class="eyebrow">ACCESO</p><h2 id="account-form-title">Crear cuenta</h2></div></div>
+            <form id="account-form" class="stack-form">
+              <input type="hidden" name="account_id" id="account-id">
+              <label id="account-employee-wrap">Trabajador<select name="employee_id" id="account-employee" required></select></label>
+              <label id="account-username-wrap">Usuario<input name="username" required maxlength="80" autocomplete="off"></label>
+              <label id="account-password-wrap">Contraseña inicial<input name="password" type="password" required minlength="12" autocomplete="new-password"><small>Mínimo 12 caracteres; se guardará protegida.</small></label>
+              <label>Rol base<select name="role" id="account-role" required></select></label>
+              <div id="account-grants" class="grant-list"></div>
+              <div class="info-note"><span>ⓘ</span><p>El catálogo de artículos es compartido. Para gestionarlo, habilita ese permiso en todos los almacenes.</p></div>
+              <button class="button primary full-button" type="submit">Crear cuenta</button>
+            </form>
+          </article>
+          <article class="panel list-panel"><div class="panel-heading"><div><p class="eyebrow">USUARIOS DEL SISTEMA</p><h2>Cuentas registradas</h2></div><span class="count-pill" id="account-count">0</span></div><div id="account-list"></div></article>
+        </div>
+      </section>
+
+      <section class="view" id="view-articulos" data-view-permission="manage_items">
+        <div class="page-heading"><div><p class="eyebrow">CATÁLOGO</p><h1>Artículos</h1><p class="subtitle">Define los materiales y equipos que se controlarán en almacén.</p></div></div>
+        <div class="form-layout">
+          <article class="panel form-panel"><div class="panel-heading"><div><p class="eyebrow">NUEVO REGISTRO</p><h2>Registrar artículo</h2></div></div>
+            <form id="item-form" class="stack-form">
+              <input type="hidden" name="warehouse_id" id="item-warehouse-id">
+              <label>Código<input name="code" maxlength="60" required placeholder="Ej. MAT-1001"></label>
+              <label>Nombre del artículo<input name="name" maxlength="160" required placeholder="Nombre y descripción breve"></label>
+              <div class="two-fields"><label>Tipo<select name="item_type"><option>Material</option><option>Equipo</option></select></label><label>Unidad de medida<select name="unit"><option value="unidad">Unidad</option><option value="metro">Metro</option><option value="rollo">Rollo</option><option value="caja">Caja</option><option value="par">Par</option></select></label></div>
+              <label class="check-row"><input type="checkbox" name="serial_control"><span><strong>Controlar por número de serie</strong><small>Usar en equipos únicos como módems o repetidores.</small></span></label>
+              <button class="button primary full-button" type="submit">Guardar artículo</button>
+            </form>
+          </article>
+          <article class="panel list-panel"><div class="panel-heading"><div><p class="eyebrow">CATÁLOGO ACTIVO</p><h2>Artículos registrados</h2></div><span class="count-pill" id="item-count">0</span></div><div id="item-list"></div></article>
+        </div>
+      </section>
+
+      <section class="view" id="view-ingreso" data-view-permission="receive_stock">
+        <div class="page-heading"><div><p class="eyebrow">ENTRADA</p><h1>Ingreso al almacén central</h1><p class="subtitle">Registra el documento de origen y el material o equipo recibido.</p></div></div>
+        <article class="panel transaction-panel"><form id="receipt-form">
+          <div class="form-section-title"><span class="step-number">1</span><div><h2>Datos del documento</h2><p>Identifica el origen del ingreso.</p></div></div>
+          <div class="three-fields"><label>Subalmacén de destino<select name="location_id" id="receipt-location" required></select></label><label>Tipo de documento<select name="document_type"><option>Guía de remisión</option><option>Factura</option><option>Orden de compra</option><option>Acta de entrega</option><option>Otro</option></select></label><label>Número de documento<input name="document_number" maxlength="100" required placeholder="Serie y número"></label><label>Responsable<input name="responsible" maxlength="100" required placeholder="Quién registra el ingreso"></label></div>
+          <div class="form-section-title material-title"><span class="step-number">2</span><div><h2>Artículos recibidos</h2><p>Para equipos seriados, ingresa una serie por línea.</p></div></div>
+          <div id="receipt-lines" class="transaction-lines"></div><button type="button" class="button dashed" id="add-receipt-line">＋ Agregar artículo</button>
+          <label class="notes-label">Observación <textarea name="notes" maxlength="500" rows="3" placeholder="Comentario opcional"></textarea></label>
+          <div class="form-footer"><span class="quiet-note">El movimiento se guarda en el historial y actualiza el saldo central.</span><button class="button primary" type="submit">Confirmar ingreso</button></div>
+        </form></article>
+      </section>
+
+      <section class="view" id="view-transferencia" data-view-permission="transfer_stock">
+        <div class="page-heading"><div><p class="eyebrow">SALIDA DEL ALMACÉN CENTRAL</p><h1>Transferencia a técnico</h1><p class="subtitle">Entrega materiales o equipos a la ubicación de inventario del técnico.</p></div></div>
+        <article class="panel transaction-panel"><form id="transfer-form">
+          <div class="form-section-title"><span class="step-number">1</span><div><h2>Datos de entrega</h2><p>El técnico será el destino del movimiento.</p></div></div>
+          <div class="three-fields"><label>Subalmacén de origen<select name="source_location_id" id="transfer-location" required></select></label><label>Técnico destinatario<select name="employee_id" id="transfer-employee" required></select></label><label>Documento de transferencia<input name="document" maxlength="120" required placeholder="Vale o acta de salida"></label><label>Responsable de entrega<input name="responsible" maxlength="100" required placeholder="Quién entrega"></label></div>
+          <div class="form-section-title material-title"><span class="step-number">2</span><div><h2>Materiales y equipos</h2><p>Solo se podrá transferir stock disponible en el almacén central.</p></div></div>
+          <div id="transfer-lines" class="transaction-lines"></div><button type="button" class="button dashed" id="add-transfer-line">＋ Agregar artículo</button>
+          <label class="notes-label">Observación <textarea name="notes" maxlength="500" rows="3" placeholder="Comentario opcional"></textarea></label>
+          <div class="form-footer"><span class="quiet-note">Una serie solo puede estar en una ubicación a la vez.</span><button class="button primary" type="submit">Confirmar transferencia</button></div>
+        </form></article>
+      </section>
+
+      <footer class="app-footer"><span>Campo y Stock · Prototipo de gestión</span><span>Datos locales de desarrollo</span></footer>
+    </main>
+  </div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
+

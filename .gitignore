@@ -5,3 +5,4 @@ instance/
 .env
 .venv/
 supabase/.temp/
+
