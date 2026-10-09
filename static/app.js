@@ -5,6 +5,7 @@ const viewTitles = {
   movimientos: "Movimientos",
   personal: "Personal",
   articulos: "Artículos",
+  "opciones-articulos": "Opciones de artículos",
   ingreso: "Ingreso al almacén",
   transferencia: "Transferencia a técnico",
   almacenes: "Almacenes",
@@ -53,6 +54,7 @@ function showView(name) {
     renderTransactionLines("transfer");
   }
   if (name === "cuentas") loadAccountManager();
+  if (name === "opciones-articulos") loadArticleOptionManager();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -91,6 +93,7 @@ function renderAll() {
   applyAccess();
   $("#user-label").textContent = `${state.meta?.user?.name || ""} · ${state.meta?.user?.role || ""}`;
   renderLocationOptions();
+  renderItemOptionSelects();
   $("#employee-warehouse-id").value = state.warehouseId || "";
   $("#subwarehouse-warehouse-id").value = state.warehouseId || "";
   $("#employee-warehouse-id").disabled = !state.warehouseId;
@@ -136,7 +139,7 @@ function applyAccess() {
   const catalogNav = document.querySelector('[aria-label="Catálogos"]');
   const catalogLabel = document.querySelector(".secondary-label");
   catalogLabel.hidden = catalogNav.hidden;
-  $("#warehouse-selector").disabled = admin ? false : state.meta.warehouses.length < 2;
+  $("#warehouse-selector").disabled = state.snapshot.warehouses.length < 2;
   if (!canOpenView("inicio")) showView("inicio");
   const selected = document.querySelector(".view.active");
   if (selected && !canOpenView(selected.id.replace("view-", ""))) showView("inicio");
@@ -226,13 +229,48 @@ function renderEmployees() {
 }
 
 function renderItems() {
-  const items = state.snapshot.items;
-  $("#item-count").textContent = items.length;
+  const query = $("#item-search").value.trim().toLocaleLowerCase("es-PE");
+  const items = state.snapshot.items.filter((item) => [item.code, item.name, item.item_type, item.unit, item.technology, item.model]
+    .some((value) => String(value || "").toLocaleLowerCase("es-PE").includes(query)));
+  $("#item-count").textContent = `${items.length}/${state.snapshot.items.length}`;
   if (!items.length) {
-    $("#item-list").innerHTML = '<div class="empty-list">El catálogo está vacío. Registra un material o equipo.</div>';
+    $("#item-list").innerHTML = state.snapshot.items.length ? '<div class="empty-list">No hay artículos que coincidan con la búsqueda.</div>' : '<div class="empty-list">El catálogo está vacío. Registra un artículo.</div>';
     return;
   }
-  $("#item-list").innerHTML = items.map((item) => `<div class="catalog-row"><span class="metric-icon ${item.item_type === "Equipo" ? "gold" : "mint"}">${item.item_type === "Equipo" ? "◈" : "▤"}</span><span class="catalog-main"><strong>${escapeHtml(item.name)}</strong><small><span class="catalog-code">${escapeHtml(item.code)}</span> · ${escapeHtml(item.item_type)} · ${escapeHtml(item.unit)}${item.serial_control ? " · Control por serie" : ""}</small></span></div>`).join("");
+  $("#item-list").innerHTML = items.map((item) => {
+    const settings = state.snapshot.item_settings.find((entry) => entry.item_id === item.id && entry.warehouse_id === state.warehouseId);
+    const minimum = settings?.min_stock ?? 0;
+    return `<div class="catalog-row"><span class="metric-icon ${item.item_type === "Equipo" ? "gold" : "mint"}">${item.item_type === "Equipo" ? "◈" : "▤"}</span><span class="catalog-main"><strong>${escapeHtml(item.name)}</strong><small><span class="catalog-code">${escapeHtml(item.code)}</span> · ${escapeHtml(item.item_type)} · ${escapeHtml(item.unit)}${item.technology ? ` · ${escapeHtml(item.technology)}` : ""}${item.model ? ` · ${escapeHtml(item.model)}` : ""}${item.serial_control ? " · Control por serie" : ""}</small></span><label class="minimum-stock"><span>Stock mínimo</span><span><input type="number" min="0" step="0.001" value="${escapeHtml(minimum)}" data-min-stock-item="${item.id}" aria-label="Stock mínimo de ${escapeHtml(item.name)}"><button class="button secondary" data-save-min-stock="${item.id}">Guardar</button></span></label></div>`;
+  }).join("");
+}
+
+function renderItemOptionSelects() {
+  const options = state.snapshot?.article_options || {};
+  for (const [group, selector] of Object.entries({item_type: "#item-type", unit: "#item-unit", technology: "#item-technology", model: "#item-model"})) {
+    const select = $(selector);
+    if (!select) continue;
+    const previous = select.value;
+    const emptyOption = group === "technology" || group === "model" ? '<option value="">Sin especificar</option>' : "";
+    select.innerHTML = emptyOption + (options[group] || []).map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.value)}</option>`).join("");
+    if ([...select.options].some((option) => option.value === previous)) select.value = previous;
+  }
+}
+
+async function loadArticleOptionManager() {
+  try {
+    const response = await request("/api/admin/article-options");
+    const groups = response.options;
+    $("#article-option-manager").innerHTML = Object.entries(response.labels).map(([group, label]) => `<article class="panel option-group"><div class="panel-heading"><div><p class="eyebrow">LISTA COMPARTIDA</p><h2>${escapeHtml(label)}</h2></div><span class="count-pill">${groups[group].filter((option) => option.active).length}</span></div><form class="option-form" data-option-group="${group}"><label class="sr-only" for="new-option-${group}">Nueva opción de ${escapeHtml(label)}</label><input id="new-option-${group}" name="value" maxlength="100" required placeholder="Agregar ${escapeHtml(label.toLowerCase())}"><button class="button primary" type="submit">Agregar</button></form><div class="option-list">${groups[group].map((option) => `<div class="option-row"><span><strong>${escapeHtml(option.value)}</strong><small>${option.usage_count} artículo(s) asociado(s)</small></span><span class="option-actions"><span class="status-tag">${option.active ? "Activa" : "Inactiva"}</span><button class="button secondary" data-toggle-article-option="${option.id}" data-active="${option.active ? "0" : "1"}">${option.active ? "Desactivar" : "Reactivar"}</button></span></div>`).join("")}</div></article>`).join("");
+  } catch (error) { showNotice(error.message, "error"); }
+}
+
+async function setMinimumStock(itemId) {
+  const input = $(`[data-min-stock-item="${itemId}"]`);
+  try {
+    await request("/api/items/minimum-stock", {method: "PUT", body: JSON.stringify({item_id: itemId, warehouse_id: state.warehouseId, min_stock: input.value})});
+    await loadSnapshot();
+    showNotice("Stock mínimo actualizado para este almacén.");
+  } catch (error) { showNotice(error.message, "error"); }
 }
 
 function inventoryTable(rows) {
@@ -453,6 +491,16 @@ function selectedAccountAccess() {
 }
 
 document.addEventListener("click", (event) => {
+  const optionButton = event.target.closest("[data-toggle-article-option]");
+  if (optionButton) {
+    const optionId = Number(optionButton.dataset.toggleArticleOption);
+    const active = optionButton.dataset.active === "1";
+    request(`/api/admin/article-options/${optionId}`, {method: "PUT", body: JSON.stringify({active})})
+      .then(async () => { await loadSnapshot(); await loadArticleOptionManager(); showNotice(active ? "Opción reactivada." : "Opción desactivada."); })
+      .catch((error) => showNotice(error.message, "error"));
+  }
+  const minimumButton = event.target.closest("[data-save-min-stock]");
+  if (minimumButton) setMinimumStock(Number(minimumButton.dataset.saveMinStock));
   const editButton = event.target.closest("[data-edit-account]");
   if (editButton) editAccountAccess(Number(editButton.dataset.editAccount));
   const button = event.target.closest("[data-view]");
@@ -541,7 +589,23 @@ $("#item-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const data = formObject(event.currentTarget);
   data.serial_control = $("[name=serial_control]", event.currentTarget).checked;
+  data.warehouse_id = state.warehouseId;
   await submitForm(event.currentTarget, "/api/items", data, "Artículo registrado en el catálogo.");
+});
+
+$("#item-search").addEventListener("input", renderItems);
+
+$("#article-option-manager").addEventListener("submit", async (event) => {
+  const form = event.target.closest("[data-option-group]");
+  if (!form) return;
+  event.preventDefault();
+  try {
+    await request("/api/admin/article-options", {method: "POST", body: JSON.stringify({group_key: form.dataset.optionGroup, ...formObject(form)})});
+    form.reset();
+    await loadSnapshot();
+    await loadArticleOptionManager();
+    showNotice("Opción agregada al catálogo compartido.");
+  } catch (error) { showNotice(error.message, "error"); }
 });
 
 $("#add-receipt-line").addEventListener("click", () => addTransactionLine("receipt"));

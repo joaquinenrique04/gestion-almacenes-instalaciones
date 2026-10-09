@@ -47,6 +47,12 @@ ROLE_DEFAULTS = {
 MAX_BODY_BYTES = 1_000_000
 EMPLOYEE_ROLES = {"Técnico", "Almacenero", "Supervisor", "Otro"}
 ITEM_TYPES = {"Material", "Equipo"}
+ARTICLE_OPTION_GROUPS = {
+    "item_type": {"label": "Tipo de artículo", "column": "item_type", "defaults": ["Material", "Equipo"]},
+    "unit": {"label": "Unidad de medida", "column": "unit", "defaults": ["Unidad", "Metro", "Rollo", "Caja", "Par"]},
+    "technology": {"label": "Tecnología", "column": "technology", "defaults": ["HFC", "FTTH", "Satelital"]},
+    "model": {"label": "Modelo", "column": "model", "defaults": ["FIBRA"]},
+}
 
 
 class AppError(Exception):
@@ -78,7 +84,8 @@ class PostgresConnection:
         cursor = self.raw.cursor()
         match = re.match(r"\s*INSERT\s+INTO\s+(\w+)", sql, re.IGNORECASE)
         tables_with_ids = {"warehouses", "employees", "locations", "items", "movements", "movement_lines",
-                           "serial_units", "movement_serials", "access_roles", "user_accounts", "auth_sessions"}
+                           "serial_units", "movement_serials", "access_roles", "user_accounts", "auth_sessions",
+                           "article_options"}
         returning_id = bool(match and match.group(1).lower() in tables_with_ids) and " RETURNING " not in sql.upper()
         if returning_id:
             sql += " RETURNING id"
@@ -193,11 +200,30 @@ def initialize_database(db_path: Path = DB_PATH) -> None:
                 id INTEGER PRIMARY KEY,
                 code TEXT NOT NULL COLLATE NOCASE UNIQUE,
                 name TEXT NOT NULL,
-                item_type TEXT NOT NULL CHECK (item_type IN ('Material', 'Equipo')),
+                item_type TEXT NOT NULL,
                 unit TEXT NOT NULL,
+                technology TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
                 serial_control INTEGER NOT NULL DEFAULT 0 CHECK (serial_control IN (0, 1)),
                 active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
                 created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS article_options (
+                id INTEGER PRIMARY KEY,
+                group_key TEXT NOT NULL CHECK (group_key IN ('item_type', 'unit', 'technology', 'model')),
+                value TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+                created_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_article_options_group_value
+                ON article_options(group_key, value COLLATE NOCASE);
+
+            CREATE TABLE IF NOT EXISTS warehouse_item_settings (
+                warehouse_id INTEGER NOT NULL REFERENCES warehouses(id) ON DELETE CASCADE,
+                item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                min_stock REAL NOT NULL DEFAULT 0 CHECK (min_stock >= 0),
+                PRIMARY KEY (warehouse_id, item_id)
             );
 
             CREATE TABLE IF NOT EXISTS movements (
@@ -287,7 +313,58 @@ def initialize_database(db_path: Path = DB_PATH) -> None:
         )
         for role_name in ROLE_DEFAULTS:
             connection.execute("INSERT OR IGNORE INTO access_roles(name) VALUES (?)", (role_name,))
+        item_columns = {row["name"] for row in connection.execute("PRAGMA table_info(items)")}
+        for column in ("technology", "model"):
+            if column not in item_columns:
+                connection.execute(f"ALTER TABLE items ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+        for group_key, config in ARTICLE_OPTION_GROUPS.items():
+            for option in config["defaults"]:
+                connection.execute(
+                    "INSERT OR IGNORE INTO article_options(group_key, value, active, created_at) VALUES (?, ?, 1, ?)",
+                    (group_key, option, now_iso()),
+                )
+            existing_values = connection.execute(
+                f"SELECT DISTINCT {config['column']} AS option_value FROM items WHERE {config['column']} <> ''"
+            )
+            for existing in existing_values:
+                connection.execute(
+                    "INSERT OR IGNORE INTO article_options(group_key, value, active, created_at) VALUES (?, ?, 1, ?)",
+                    (group_key, existing["option_value"], now_iso()),
+                )
         connection.commit()
+        item_schema = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'items'"
+        ).fetchone()["sql"]
+        if "item_type IN ('Material', 'Equipo')" in item_schema:
+            connection.execute("PRAGMA foreign_keys = OFF")
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute("""CREATE TABLE items_new (
+                    id INTEGER PRIMARY KEY,
+                    code TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                    name TEXT NOT NULL,
+                    item_type TEXT NOT NULL,
+                    unit TEXT NOT NULL,
+                    technology TEXT NOT NULL DEFAULT '',
+                    model TEXT NOT NULL DEFAULT '',
+                    serial_control INTEGER NOT NULL DEFAULT 0 CHECK (serial_control IN (0, 1)),
+                    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+                    created_at TEXT NOT NULL
+                )""")
+                connection.execute("""INSERT INTO items_new(id, code, name, item_type, unit, technology, model,
+                    serial_control, active, created_at)
+                    SELECT id, code, name, item_type, unit, technology, model, serial_control, active, created_at FROM items""")
+                connection.execute("DROP TABLE items")
+                connection.execute("ALTER TABLE items_new RENAME TO items")
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+            finally:
+                connection.execute("PRAGMA foreign_keys = ON")
+            broken_reference = connection.execute("PRAGMA foreign_key_check").fetchone()
+            if broken_reference:
+                raise RuntimeError("La migración del catálogo encontró referencias de inventario inválidas.")
         employee_columns = {row["name"] for row in connection.execute("PRAGMA table_info(employees)")}
         if "warehouse_id" not in employee_columns:
             connection.execute("ALTER TABLE employees ADD COLUMN warehouse_id INTEGER REFERENCES warehouses(id)")
@@ -350,6 +427,16 @@ def positive_number(value: object, label: str) -> float:
         raise AppError(f"Ingresa una cantidad válida para {label}.") from None
     if number <= 0 or number > 1_000_000_000:
         raise AppError(f"La cantidad de {label} debe ser mayor que cero.")
+    return number
+
+
+def nonnegative_number(value: object, label: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise AppError(f"Ingresa una cantidad válida para {label}.") from None
+    if not 0 <= number <= 1_000_000_000:
+        raise AppError(f"La cantidad de {label} debe ser igual o mayor que cero.")
     return number
 
 
@@ -833,29 +920,167 @@ def create_employee(payload: dict, db_path: Path = DB_PATH, actor: dict | None =
 def create_item(payload: dict, db_path: Path = DB_PATH, actor: dict | None = None) -> dict:
     code = clean_text(payload.get("code"), "código de artículo", 60)
     name = clean_text(payload.get("name"), "nombre de artículo", 160)
-    item_type = clean_text(payload.get("item_type"), "tipo de artículo", 20)
-    unit = clean_text(payload.get("unit", "unidad"), "unidad", 30)
+    item_type = clean_text(payload.get("item_type"), "tipo de artículo", 80)
+    unit = clean_text(payload.get("unit"), "unidad", 80)
+    technology = clean_text(payload.get("technology"), "tecnología", 80, required=False)
+    model = clean_text(payload.get("model"), "modelo", 100, required=False)
     serial_control = bool(payload.get("serial_control"))
-    if item_type not in ITEM_TYPES:
-        raise AppError("Selecciona Material o Equipo.")
+    min_stock = nonnegative_number(payload.get("min_stock", 0), "stock mínimo")
     connection = connect(db_path)
     try:
         begin(connection)
+        selected_options = (("item_type", item_type), ("unit", unit), ("technology", technology), ("model", model))
+        canonical_values = {}
+        for group_key, value in selected_options:
+            if not value:
+                canonical_values[group_key] = ""
+                continue
+            option = connection.execute(
+                "SELECT value FROM article_options WHERE group_key = ? AND lower(value) = lower(?) AND active = 1",
+                (group_key, value),
+            ).fetchone()
+            if option is None:
+                raise AppError(f"La opción seleccionada de {ARTICLE_OPTION_GROUPS[group_key]['label'].lower()} ya no está activa.")
+            canonical_values[group_key] = option["value"]
+        item_type = canonical_values["item_type"]
+        unit = canonical_values["unit"]
+        technology = canonical_values["technology"]
+        model = canonical_values["model"]
         if actor is not None:
             for row in connection.execute("SELECT id FROM warehouses WHERE active = 1"):
                 require_permission(connection, actor, int(row["id"]), "manage_items")
+        warehouse_id = int(payload.get("warehouse_id") or 0)
+        if warehouse_id:
+            get_warehouse(connection, warehouse_id)
+            if actor is not None:
+                require_permission(connection, actor, warehouse_id, "manage_items")
         cursor = connection.execute(
-            "INSERT INTO items(code, name, item_type, unit, serial_control, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (code, name, item_type, unit, int(serial_control), now_iso()),
+            "INSERT INTO items(code, name, item_type, unit, technology, model, serial_control, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (code, name, item_type, unit, technology, model, int(serial_control), now_iso()),
         )
+        item_id = cursor.lastrowid
+        if warehouse_id:
+            connection.execute(
+                "INSERT INTO warehouse_item_settings(warehouse_id, item_id, min_stock) VALUES (?, ?, ?)",
+                (warehouse_id, item_id, min_stock),
+            )
         connection.commit()
-        return {"id": cursor.lastrowid, "code": code, "name": name, "item_type": item_type,
-                "unit": unit, "serial_control": serial_control, "active": True}
+        return {"id": item_id, "code": code, "name": name, "item_type": item_type,
+                "unit": unit, "technology": technology, "model": model,
+                "serial_control": serial_control, "active": True,
+                "warehouse_id": warehouse_id or None, "min_stock": min_stock}
     except sqlite3.IntegrityError as error:
         connection.rollback()
         if "items.code" in str(error):
             raise AppError("Ya existe un artículo con ese código.", 409) from None
         raise AppError("No se pudo registrar el artículo.", 409) from None
+    finally:
+        connection.close()
+
+
+def article_options(db_path: Path = DB_PATH, include_inactive: bool = False) -> dict[str, list[dict]]:
+    connection = connect(db_path)
+    try:
+        options = {group: [] for group in ARTICLE_OPTION_GROUPS}
+        active_filter = "" if include_inactive else "WHERE active = 1"
+        rows = connection.execute(
+            f"SELECT id, group_key, value, active FROM article_options {active_filter} ORDER BY group_key, value COLLATE NOCASE"
+        )
+        for row in rows:
+            options[row["group_key"]].append(dict(row))
+        return options
+    finally:
+        connection.close()
+
+
+def article_option_usage(db_path: Path = DB_PATH) -> dict[tuple[str, str], int]:
+    connection = connect(db_path)
+    try:
+        usage = {}
+        for group_key, config in ARTICLE_OPTION_GROUPS.items():
+            rows = connection.execute(
+                f"SELECT lower({config['column']}) AS option_value, COUNT(*) AS usage_count "
+                f"FROM items WHERE {config['column']} <> '' GROUP BY lower({config['column']})"
+            )
+            for row in rows:
+                usage[(group_key, row["option_value"])] = int(row["usage_count"])
+        return usage
+    finally:
+        connection.close()
+
+
+def manage_article_option(payload: dict, db_path: Path = DB_PATH) -> dict:
+    group_key = clean_text(payload.get("group_key"), "grupo", 40)
+    if group_key not in ARTICLE_OPTION_GROUPS:
+        raise AppError("Selecciona un catálogo válido.")
+    value = clean_text(payload.get("value"), ARTICLE_OPTION_GROUPS[group_key]["label"].lower(), 100)
+    connection = connect(db_path)
+    try:
+        begin(connection)
+        row = connection.execute(
+            "SELECT id, group_key, value, active FROM article_options WHERE group_key = ? AND lower(value) = lower(?)",
+            (group_key, value),
+        ).fetchone()
+        if row is None:
+            cursor = connection.execute(
+                "INSERT INTO article_options(group_key, value, active, created_at) VALUES (?, ?, 1, ?)",
+                (group_key, value, now_iso()),
+            )
+            option_id = cursor.lastrowid
+        else:
+            option_id = row["id"]
+            if row["active"]:
+                raise AppError("Esa opción ya existe.", 409)
+            connection.execute("UPDATE article_options SET active = 1 WHERE id = ?", (option_id,))
+        connection.commit()
+        return {"id": option_id, "group_key": group_key, "value": value, "active": True}
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def set_article_option_active(option_id: int, active: bool, db_path: Path = DB_PATH) -> dict:
+    connection = connect(db_path)
+    try:
+        begin(connection)
+        row = connection.execute(
+            "SELECT id, group_key, value, active FROM article_options WHERE id = ?", (option_id,)
+        ).fetchone()
+        if row is None:
+            raise AppError("No se encontró la opción del catálogo.", 404)
+        connection.execute("UPDATE article_options SET active = ? WHERE id = ?", (int(active), option_id))
+        connection.commit()
+        return {"id": row["id"], "group_key": row["group_key"], "value": row["value"], "active": active}
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def set_item_min_stock(payload: dict, db_path: Path = DB_PATH, actor: dict | None = None) -> dict:
+    item_id = int(payload.get("item_id") or 0)
+    warehouse_id = int(payload.get("warehouse_id") or 0)
+    min_stock = nonnegative_number(payload.get("min_stock"), "stock mínimo")
+    connection = connect(db_path)
+    try:
+        begin(connection)
+        get_item(connection, item_id)
+        get_warehouse(connection, warehouse_id)
+        if actor is not None:
+            require_permission(connection, actor, warehouse_id, "manage_items")
+        connection.execute(
+            "INSERT INTO warehouse_item_settings(warehouse_id, item_id, min_stock) VALUES (?, ?, ?) "
+            "ON CONFLICT(warehouse_id, item_id) DO UPDATE SET min_stock = excluded.min_stock",
+            (warehouse_id, item_id, min_stock),
+        )
+        connection.commit()
+        return {"item_id": item_id, "warehouse_id": warehouse_id, "min_stock": min_stock}
+    except Exception:
+        connection.rollback()
+        raise
     finally:
         connection.close()
 
@@ -1141,8 +1366,12 @@ def snapshot(db_path: Path = DB_PATH, actor: dict | None = None) -> dict:
                ORDER BY e.last_name, e.first_name"""
         )]
         items = [dict(row) for row in connection.execute(
-            "SELECT id, code, name, item_type, unit, serial_control, active FROM items WHERE active = 1 ORDER BY name"
+            "SELECT id, code, name, item_type, unit, technology, model, serial_control, active FROM items WHERE active = 1 ORDER BY name"
         )]
+        item_settings = [dict(row) for row in connection.execute(
+            "SELECT warehouse_id, item_id, min_stock FROM warehouse_item_settings"
+        )]
+        options = article_options(db_path)
         locations = [dict(row) for row in connection.execute(
             """SELECT l.id, l.name, l.kind, l.warehouse_id, w.name AS warehouse_name,
                       l.employee_id, e.first_name, e.last_name
@@ -1206,9 +1435,11 @@ def snapshot(db_path: Path = DB_PATH, actor: dict | None = None) -> dict:
                 items = []
             return {"warehouses": warehouses, "employees": employees, "items": items,
                     "locations": locations, "inventory": inventory, "movements": movements,
+                    "article_options": options, "item_settings": item_settings,
                     "access": auth_metadata(actor, db_path)}
         return {"warehouses": warehouses, "employees": employees, "items": items,
-                "locations": locations, "inventory": inventory, "movements": movements}
+                "locations": locations, "inventory": inventory, "movements": movements,
+                "article_options": options, "item_settings": item_settings}
     finally:
         connection.close()
 
@@ -1258,7 +1489,12 @@ class RequestHandler(BaseHTTPRequestHandler):
             if actor is None:
                 self.send_json({"error": "Inicia sesión para continuar."}, 401)
                 return
-            self.send_json(snapshot(self.database_path, actor=actor))
+            data = snapshot(self.database_path, actor=actor)
+            allowed_warehouses = {row["id"]: set(row["permissions"]) for row in data["access"]["warehouses"]}
+            data["item_settings"] = [setting for setting in data["item_settings"]
+                                     if setting["warehouse_id"] in allowed_warehouses
+                                     and {"view_inventory", "manage_items"} & allowed_warehouses[setting["warehouse_id"]]]
+            self.send_json(data)
             return
         if path == "/api/admin/accounts":
             if actor is None or not actor.get("is_admin"):
@@ -1267,6 +1503,17 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_json({"accounts": list_accounts(self.database_path), "employees": available_employees(self.database_path),
                             "warehouses": active_warehouses(self.database_path), "roles": list(ROLE_DEFAULTS),
                             "permission_labels": PERMISSIONS, "role_defaults": {role: sorted(perms) for role, perms in ROLE_DEFAULTS.items()}})
+            return
+        if path == "/api/admin/article-options":
+            if actor is None or not actor.get("is_admin"):
+                self.send_json({"error": "Solo un administrador puede consultar estos catálogos."}, 403 if actor else 401)
+                return
+            all_options = article_options(self.database_path, include_inactive=True)
+            usage = article_option_usage(self.database_path)
+            for group_options in all_options.values():
+                for option in group_options:
+                    option["usage_count"] = usage.get((option["group_key"], option["value"].casefold()), 0)
+            self.send_json({"options": all_options, "labels": {key: config["label"] for key, config in ARTICLE_OPTION_GROUPS.items()}})
             return
         files = {"/": (STATIC_DIR / "index.html", "text/html; charset=utf-8"),
                  "/static/app.js": (STATIC_DIR / "app.js", "text/javascript; charset=utf-8"),
@@ -1325,6 +1572,14 @@ class RequestHandler(BaseHTTPRequestHandler):
                     raise AppError("Solo un administrador puede crear cuentas.", 403)
                 self.send_json({"result": create_account(payload, self.database_path)}, 201)
                 return
+            if path == "/api/admin/article-options":
+                if not actor.get("is_admin"):
+                    raise AppError("Solo un administrador puede agregar opciones al catálogo.", 403)
+                self.send_json({"result": manage_article_option(payload, self.database_path)}, 201)
+                return
+            if path == "/api/items/minimum-stock":
+                self.send_json({"result": set_item_min_stock(payload, self.database_path, actor=actor)})
+                return
             actions = {"/api/employees": create_employee,
                        "/api/items": create_item,
                        "/api/warehouses": create_warehouse,
@@ -1368,6 +1623,19 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "Solo un administrador puede cambiar permisos."}, 403)
             return
         path = urlparse(self.path).path
+        option_prefix = "/api/admin/article-options/"
+        if path.startswith(option_prefix):
+            try:
+                option_id = int(path[len(option_prefix):].strip("/"))
+                payload = self.read_json()
+                if not isinstance(payload.get("active"), bool):
+                    raise AppError("Indica si la opción debe estar activa o inactiva.")
+                self.send_json({"result": set_article_option_active(option_id, payload["active"], self.database_path)})
+            except AppError as error:
+                self.send_json({"error": str(error)}, error.status)
+            except (ValueError, TypeError):
+                self.send_json({"error": "El identificador o estado de la opción no son válidos."}, 400)
+            return
         prefix = "/api/admin/accounts/"
         if not path.startswith(prefix) or not path.endswith("/access"):
             self.send_json({"error": "No encontrado."}, 404)

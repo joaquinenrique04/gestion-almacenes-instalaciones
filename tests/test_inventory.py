@@ -18,6 +18,10 @@ from app import (
     create_warehouse,
     create_subwarehouse,
     create_item,
+    manage_article_option,
+    set_article_option_active,
+    article_options,
+    set_item_min_stock,
     initialize_database,
     permissions_for,
     receive_stock,
@@ -211,6 +215,7 @@ class InventoryFlowTests(unittest.TestCase):
         second = create_warehouse({"name": "Manchay"}, self.db_path)
         worker = create_employee({"code": "ALM-010", "first_name": "Leo", "last_name": "Local", "role": "Almacenero", "warehouse_id": second["id"]}, self.db_path)
         create_account({"employee_id": worker["id"], "username": "leo", "password": "Manchay-Acceso-2026!", "role": "Almacenero", "access": [{"warehouse_id": second["id"], "permissions": ["view_inventory"]}]}, self.db_path)
+        create_bootstrap_admin("admin-options", "Admin-Opciones-Temporal-2026!", self.db_path)
 
         class TestHandler(RequestHandler):
             database_path = self.db_path
@@ -244,6 +249,27 @@ class InventoryFlowTests(unittest.TestCase):
                 data = json.load(response)
             self.assertEqual([warehouse["id"] for warehouse in data["warehouses"]], [second["id"]])
             self.assertEqual(data["inventory"], [])
+            with self.assertRaises(HTTPError) as catalog_forbidden:
+                opener.open(base + "/api/admin/article-options")
+            self.assertEqual(catalog_forbidden.exception.code, 403)
+            catalog_forbidden.exception.close()
+            blocked_write = Request(base + "/api/admin/article-options", data=json.dumps({"group_key": "technology", "value": "Satelite de prueba"}).encode(), headers={"Content-Type": "application/json"}, method="POST")
+            with self.assertRaises(HTTPError) as write_forbidden:
+                opener.open(blocked_write)
+            self.assertEqual(write_forbidden.exception.code, 403)
+            write_forbidden.exception.close()
+
+            admin_opener = build_opener(HTTPCookieProcessor(http.cookiejar.CookieJar()))
+            admin_login = Request(base + "/api/auth/login", data=json.dumps({"username": "admin-options", "password": "Admin-Opciones-Temporal-2026!"}).encode(), headers={"Content-Type": "application/json"}, method="POST")
+            with admin_opener.open(admin_login) as response:
+                self.assertEqual(response.status, 200)
+            add_option = Request(base + "/api/admin/article-options", data=json.dumps({"group_key": "technology", "value": "Satelite de prueba"}).encode(), headers={"Content-Type": "application/json"}, method="POST")
+            with admin_opener.open(add_option) as response:
+                option_id = json.load(response)["result"]["id"]
+                self.assertEqual(response.status, 201)
+            deactivate = Request(base + f"/api/admin/article-options/{option_id}", data=json.dumps({"active": False}).encode(), headers={"Content-Type": "application/json"}, method="PUT")
+            with admin_opener.open(deactivate) as response:
+                self.assertFalse(json.load(response)["result"]["active"])
 
             location = next(location for location in data["locations"] if location["warehouse_id"] == second["id"])
             body = {"warehouse_id": second["id"], "location_id": location["id"], "document": "Guía: DENY", "lines": [{"item_id": self.material["id"], "quantity": 1, "serials": []}]}
@@ -286,6 +312,48 @@ class InventoryFlowTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM employees").fetchone()[0], 1)
         finally:
             connection.close()
+
+    def test_article_catalog_options_and_warehouse_minimum_stock(self):
+        custom_type = manage_article_option({"group_key": "item_type", "value": "Repuesto"}, self.db_path)
+        created = create_item({
+            "code": "MAT-SAT-1", "name": "Terminal satelital", "item_type": "Repuesto",
+            "unit": "Unidad", "technology": "Satelital", "model": "FIBRA", "min_stock": "2", "warehouse_id": 1,
+        }, self.db_path)
+        second_warehouse = create_warehouse({"name": "Manchay"}, self.db_path)
+        set_item_min_stock({"item_id": created["id"], "warehouse_id": second_warehouse["id"], "min_stock": 4}, self.db_path)
+        result = snapshot(self.db_path)
+        self.assertEqual(next(item for item in result["items"] if item["id"] == created["id"])["technology"], "Satelital")
+        self.assertEqual({entry["warehouse_id"]: entry["min_stock"] for entry in result["item_settings"] if entry["item_id"] == created["id"]},
+                         {1: 2, second_warehouse["id"]: 4})
+        set_article_option_active(custom_type["id"], False, self.db_path)
+        with self.assertRaisesRegex(AppError, "ya no está activa"):
+            create_item({"code": "MAT-SAT-2", "name": "Otro", "item_type": "Repuesto", "unit": "Unidad"}, self.db_path)
+        self.assertIn("Repuesto", [row["value"] for row in article_options(self.db_path, include_inactive=True)["item_type"]])
+        restored = manage_article_option({"group_key": "item_type", "value": "repuesto"}, self.db_path)
+        self.assertEqual(restored["id"], custom_type["id"])
+
+    def test_legacy_item_check_constraint_is_migrated_without_losing_movements(self):
+        legacy = self.db_path.parent / "legacy_items.sqlite3"
+        initialize_database(legacy)
+        old_item = create_item({"code": "EQ-OLD", "name": "Módem existente", "item_type": "Equipo", "unit": "Unidad"}, legacy)
+        receive_stock({"document": "Guía anterior", "responsible": "Prueba", "lines": [{"item_id": old_item["id"], "quantity": 3, "serials": []}]}, legacy)
+        connection = connect(legacy)
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("CREATE TABLE old_items_schema (id INTEGER PRIMARY KEY, code TEXT NOT NULL COLLATE NOCASE UNIQUE, name TEXT NOT NULL, item_type TEXT NOT NULL CHECK (item_type IN ('Material', 'Equipo')), unit TEXT NOT NULL, technology TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', serial_control INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)")
+        connection.execute("INSERT INTO old_items_schema SELECT id, code, name, item_type, unit, technology, model, serial_control, active, created_at FROM items")
+        connection.execute("DROP TABLE items")
+        connection.execute("ALTER TABLE old_items_schema RENAME TO items")
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.commit()
+        connection.close()
+        initialize_database(legacy)
+        custom = manage_article_option({"group_key": "item_type", "value": "Repuesto"}, legacy)
+        create_item({"code": "NEW-1", "name": "Nuevo repuesto", "item_type": "Repuesto", "unit": "Unidad"}, legacy)
+        result = snapshot(legacy)
+        self.assertEqual(len(result["items"]), 2)
+        self.assertEqual(len(result["movements"]), 1)
+        self.assertEqual(next(row for row in result["inventory"] if row["item_id"] == old_item["id"])["quantity"], 3)
+        self.assertIn("Repuesto", [row["value"] for row in article_options(legacy)["item_type"]])
 
 
 if __name__ == "__main__":
