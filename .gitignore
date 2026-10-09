@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+instance/
+*.sqlite3
+.env
+.venv/
+supabase/.temp/
